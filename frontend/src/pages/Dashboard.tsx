@@ -2,15 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI, UIOptions } from '@excalidraw/excalidraw/types'
-import { useAuthStore } from '../stores/authStore'
-import { useNavigate } from 'react-router-dom'
 import '../App.css'
 
 type ActiveTool = ReturnType<ExcalidrawImperativeAPI['getAppState']>['activeTool']
 
 export default function Dashboard() {
-  const { username, logout } = useAuthStore()
-  const navigate = useNavigate()
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null)
   const touchPointerIdsRef = useRef(new Set<number>())
@@ -29,11 +25,6 @@ export default function Dashboard() {
     }),
     [],
   )
-
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
-  }
 
   const handleNewCanvas = () => {
     excalidrawApiRef.current?.resetScene()
@@ -107,15 +98,12 @@ export default function Dashboard() {
       <header className="dashboard-topbar">
         <div className="dashboard-brand">
           <h1 className="dashboard-title">Excalidraw</h1>
-          <p className="dashboard-user">Hola, {username ?? 'usuario'}</p>
+          <p className="dashboard-user">Modo dibujo táctil</p>
         </div>
 
         <div className="dashboard-actions">
           <button className="dashboard-action" onClick={handleNewCanvas} type="button">
             Lienzo nuevo
-          </button>
-          <button className="dashboard-logout" onClick={handleLogout} type="button">
-            Salir
           </button>
         </div>
       </header>
