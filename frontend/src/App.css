@@ -50,7 +50,10 @@
 .dashboard-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.5rem;
+  max-width: 100%;
 }
 
 .dashboard-action {
@@ -94,6 +97,10 @@
   border-color: #97b4e7;
 }
 
+.dashboard-action--import {
+  background-color: #f4f8ff;
+}
+
 .dashboard-action:hover {
   background-color: #f3f8ff;
 }
@@ -101,6 +108,10 @@
 .dashboard-action:focus-visible {
   outline: 2px solid #2e6de4;
   outline-offset: 2px;
+}
+
+.dashboard-file-input {
+  display: none;
 }
 
 .dashboard-main {
@@ -135,6 +146,10 @@
 }
 
 .dashboard-canvas .excalidraw .ToolIcon__penMode {
+  display: none !important;
+}
+
+.dashboard-canvas .excalidraw .library-menu-browse-button {
   display: none !important;
 }
 
