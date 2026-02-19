@@ -76,6 +76,24 @@
   background-color: #eef5ff;
 }
 
+.dashboard-action-icon {
+  display: inline-flex;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-right: 0.45rem;
+}
+
+.dashboard-action-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+}
+
+.dashboard-action--pen-mode.is-active {
+  background-color: #dfebff;
+  border-color: #97b4e7;
+}
+
 .dashboard-action:hover {
   background-color: #f3f8ff;
 }
@@ -114,6 +132,10 @@
   --lg-button-size: 3rem;
   --lg-icon-size: 1.4rem;
   --space-factor: 0.34rem;
+}
+
+.dashboard-canvas .excalidraw .ToolIcon__penMode {
+  display: none !important;
 }
 
 @media (pointer: coarse) {
