@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI, UIOptions } from '@excalidraw/excalidraw/types'
@@ -6,6 +6,7 @@ import '../App.css'
 
 type ActiveTool = ReturnType<ExcalidrawImperativeAPI['getAppState']>['activeTool']
 type SceneUpdatePayload = Parameters<ExcalidrawImperativeAPI['updateScene']>[0]
+type CatalogLoadState = 'idle' | 'loading' | 'ready' | 'error'
 type ExcalidrawApiWithLibraryImport = ExcalidrawImperativeAPI & {
   updateLibrary?: (params: {
     libraryItems: unknown[]
@@ -14,6 +15,63 @@ type ExcalidrawApiWithLibraryImport = ExcalidrawImperativeAPI & {
     openLibraryMenu: boolean
   }) => void | Promise<void>
 }
+type CatalogCollection = {
+  id: string
+  name: string
+  source: string
+  description?: string
+  author?: string
+}
+
+const LIBRARY_CATALOG_URL =
+  'https://raw.githubusercontent.com/excalidraw/excalidraw-libraries/main/libraries.json'
+const LIBRARY_SOURCE_BASE_URL =
+  'https://raw.githubusercontent.com/excalidraw/excalidraw-libraries/main/libraries/'
+
+const FALLBACK_CATALOG: CatalogCollection[] = [
+  {
+    id: 'fallback-charts',
+    name: 'Charts',
+    source: 'charts/charts.json',
+    description: 'Coleccion de graficos y elementos para tableros.',
+    author: 'lamwai82',
+  },
+  {
+    id: 'fallback-brands',
+    name: 'Brand Logos',
+    source: 'brands/brands logos (library).json',
+    description: 'Iconos y logotipos para diagramas de producto.',
+    author: 'chakrihacker',
+  },
+  {
+    id: 'fallback-humanities',
+    name: 'Humanities and Social Sciences Icons',
+    source: 'education/literature/humanities-and-social-sciences-icons.json',
+    description: 'Iconos educativos para mapas conceptuales.',
+    author: 'jerrylow',
+  },
+  {
+    id: 'fallback-material',
+    name: 'Material Icons (Filled)',
+    source: 'libraries/icons/material-design-icons-filled.excalidrawlib',
+    description: 'Pack de iconos generales tipo material.',
+    author: 'toolzflow',
+  },
+  {
+    id: 'fallback-cosmos',
+    name: 'Cosmology Icons',
+    source: 'science/physics/cosmology icons.excalidrawlib',
+    description: 'Coleccion cientifica para diagramas de fisica.',
+    author: 'rdrahn',
+  },
+  {
+    id: 'fallback-theory',
+    name: 'Theory of Constraints',
+    source: 'business/strategy and planning/theory_of_constraints_3_entities.json',
+    description: 'Plantillas para teoria de restricciones.',
+    author: 'mihaialbert',
+  },
+]
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
@@ -34,61 +92,56 @@ const extractLibraryItems = (parsed: unknown): unknown[] | null => {
   return null
 }
 
-const normalizeUrl = (rawValue: string): string | null => {
-  try {
-    const parsedUrl = new URL(rawValue)
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return null
+const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
+  if (!Array.isArray(rawCatalog)) {
+    return []
+  }
+
+  return rawCatalog.flatMap((entry, index) => {
+    if (!isRecord(entry)) {
+      return []
     }
 
-    return parsedUrl.toString()
-  } catch {
-    return null
-  }
+    const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+    const source = typeof entry.source === 'string' ? entry.source.trim() : ''
+
+    if (!name || !source) {
+      return []
+    }
+
+    const description =
+      typeof entry.description === 'string' && entry.description.trim()
+        ? entry.description.trim()
+        : undefined
+
+    let author: string | undefined
+    if (isRecord(entry.author) && typeof entry.author.name === 'string' && entry.author.name.trim()) {
+      author = entry.author.name.trim()
+    }
+
+    return [
+      {
+        id: `${source}-${index}`,
+        name,
+        source,
+        description,
+        author,
+      },
+    ]
+  })
 }
 
-const extractLibraryUrlFromHash = (hashValue: string): string | null => {
-  const hashParams = new URLSearchParams(hashValue.startsWith('#') ? hashValue.slice(1) : hashValue)
-  const addLibraryValue = hashParams.get('addLibrary')
-
-  if (!addLibraryValue) {
-    return null
-  }
-
-  const normalizedUrl = normalizeUrl(addLibraryValue)
-  if (normalizedUrl) {
-    return normalizedUrl
-  }
-
+const resolveCatalogSourceUrl = (source: string): string => {
   try {
-    return normalizeUrl(decodeURIComponent(addLibraryValue))
+    const directUrl = new URL(source)
+    if (directUrl.protocol === 'http:' || directUrl.protocol === 'https:') {
+      return directUrl.toString()
+    }
   } catch {
-    return null
-  }
-}
-
-const resolveLibraryUrl = (userInput: string): string | null => {
-  const trimmedInput = userInput.trim()
-  if (!trimmedInput) {
-    return null
+    // Fall through to repository relative path.
   }
 
-  if (trimmedInput.startsWith('#')) {
-    return extractLibraryUrlFromHash(trimmedInput)
-  }
-
-  const normalizedDirectUrl = normalizeUrl(trimmedInput)
-  if (!normalizedDirectUrl) {
-    return null
-  }
-
-  const parsedDirectUrl = new URL(normalizedDirectUrl)
-  const hashLibraryUrl = extractLibraryUrlFromHash(parsedDirectUrl.hash)
-  if (hashLibraryUrl) {
-    return hashLibraryUrl
-  }
-
-  return parsedDirectUrl.toString()
+  return new URL(source.replace(/^\/+/, ''), LIBRARY_SOURCE_BASE_URL).toString()
 }
 
 export default function Dashboard() {
@@ -96,6 +149,11 @@ export default function Dashboard() {
   const libraryFileInputRef = useRef<HTMLInputElement | null>(null)
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null)
   const [penModeEnabled, setPenModeEnabled] = useState(false)
+  const [isCatalogOpen, setIsCatalogOpen] = useState(false)
+  const [catalogLoadState, setCatalogLoadState] = useState<CatalogLoadState>('idle')
+  const [catalogCollections, setCatalogCollections] = useState<CatalogCollection[]>(FALLBACK_CATALOG)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [collectionBeingAddedId, setCollectionBeingAddedId] = useState<string | null>(null)
   const touchPointerIdsRef = useRef(new Set<number>())
   const toolBeforeTouchRef = useRef<ActiveTool | null>(null)
 
@@ -167,6 +225,51 @@ export default function Dashboard() {
     return libraryItems.length
   }
 
+  const loadCatalogCollections = useCallback(async () => {
+    if (catalogLoadState === 'loading') {
+      return
+    }
+
+    setCatalogLoadState('loading')
+    setCatalogError(null)
+
+    try {
+      const response = await fetch(LIBRARY_CATALOG_URL, { cache: 'no-store' })
+      if (!response.ok) {
+        throw new Error(`No se pudo cargar el catalogo (HTTP ${response.status}).`)
+      }
+
+      const parsedCatalog = (await response.json()) as unknown
+      const parsedCollections = parseCatalogCollections(parsedCatalog)
+
+      if (parsedCollections.length === 0) {
+        throw new Error('El catalogo recibido no tiene colecciones validas.')
+      }
+
+      setCatalogCollections(parsedCollections)
+      setCatalogLoadState('ready')
+    } catch (error) {
+      setCatalogLoadState('error')
+      setCatalogError(error instanceof Error ? error.message : 'No se pudo cargar el catalogo.')
+      setCatalogCollections(FALLBACK_CATALOG)
+    }
+  }, [catalogLoadState])
+
+  const handleOpenCatalog = () => {
+    setIsCatalogOpen(true)
+    if (catalogLoadState === 'idle') {
+      void loadCatalogCollections()
+    }
+  }
+
+  const handleCloseCatalog = () => {
+    if (collectionBeingAddedId) {
+      return
+    }
+
+    setIsCatalogOpen(false)
+  }
+
   const handleImportFromFileClick = () => {
     libraryFileInputRef.current?.click()
   }
@@ -206,30 +309,30 @@ export default function Dashboard() {
     fileReader.readAsText(selectedFile)
   }
 
-  const handleImportFromUrl = async () => {
-    const userInput = window.prompt('Pega la URL de la biblioteca:')
-    if (!userInput) return
-
-    const libraryUrl = resolveLibraryUrl(userInput)
-    if (!libraryUrl) {
-      showToast('URL invalida. Usa http(s) o #addLibrary=...', 3200)
+  const handleAddCollection = async (collection: CatalogCollection) => {
+    if (collectionBeingAddedId) {
       return
     }
 
+    setCollectionBeingAddedId(collection.id)
+
     try {
-      const response = await fetch(libraryUrl)
+      const sourceUrl = resolveCatalogSourceUrl(collection.source)
+      const response = await fetch(sourceUrl)
       if (!response.ok) {
-        throw new Error(`No se pudo descargar la biblioteca (HTTP ${response.status}).`)
+        throw new Error(`No se pudo descargar la coleccion (HTTP ${response.status}).`)
       }
 
-      const responseText = await response.text()
-      const totalImported = await importLibraryFromText(responseText)
-      showToast(`Biblioteca importada desde URL (${totalImported} elementos).`)
+      const collectionText = await response.text()
+      const totalImported = await importLibraryFromText(collectionText)
+      showToast(`Coleccion agregada: ${collection.name} (${totalImported} figuras).`)
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : 'No se pudo importar la biblioteca desde URL.',
+        error instanceof Error ? error.message : 'No se pudo agregar la coleccion seleccionada.',
         3200,
       )
+    } finally {
+      setCollectionBeingAddedId(null)
     }
   }
 
@@ -241,6 +344,36 @@ export default function Dashboard() {
     api.updateScene({ appState: { penMode: nextPenMode } })
     showToast(nextPenMode ? 'Solo stylus activo' : 'Touch y stylus activos', 1800)
   }
+
+  useEffect(() => {
+    const handleLibraryExternalLink = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) {
+        return
+      }
+
+      const externalLibraryLink = target.closest(
+        '.layer-ui__library a[href*="libraries.excalidraw.com"]',
+      )
+      if (!externalLibraryLink) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      showToast('Usa el boton Catalogo para agregar colecciones.', 2600)
+      setIsCatalogOpen(true)
+
+      if (catalogLoadState === 'idle') {
+        void loadCatalogCollections()
+      }
+    }
+
+    window.addEventListener('click', handleLibraryExternalLink, true)
+    return () => {
+      window.removeEventListener('click', handleLibraryExternalLink, true)
+    }
+  }, [catalogLoadState, loadCatalogCollections])
 
   useEffect(() => {
     if (!excalidrawApi) return
@@ -314,7 +447,7 @@ export default function Dashboard() {
       <header className="dashboard-topbar">
         <div className="dashboard-brand">
           <h1 className="dashboard-title">Excalidraw</h1>
-          <p className="dashboard-user">Modo dibujo táctil</p>
+          <p className="dashboard-user">Modo dibujo tactil</p>
         </div>
 
         <div className="dashboard-actions">
@@ -348,59 +481,16 @@ export default function Dashboard() {
           </button>
           <button
             className="dashboard-action dashboard-action--import"
-            onClick={handleImportFromFileClick}
-            title="Importar biblioteca desde archivo"
+            onClick={handleOpenCatalog}
+            title="Abrir catalogo de colecciones"
             type="button"
           >
             <span aria-hidden="true" className="dashboard-action-icon">
               <svg fill="none" viewBox="0 0 24 24">
-                <path
-                  d="M12 4v10m0 0l4-4m-4 4l-4-4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
-                <path
-                  d="M5 18h14"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
+                <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" strokeWidth="1.8" />
               </svg>
             </span>
-            Importar archivo
-          </button>
-          <button
-            className="dashboard-action dashboard-action--import"
-            onClick={() => {
-              void handleImportFromUrl()
-            }}
-            title="Importar biblioteca desde URL"
-            type="button"
-          >
-            <span aria-hidden="true" className="dashboard-action-icon">
-              <svg fill="none" viewBox="0 0 24 24">
-                <path
-                  d="M10.5 13.5L13.5 10.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
-                <path
-                  d="M8.2 15.8a3 3 0 0 1 0-4.3l2.1-2.1a3 3 0 0 1 4.3 0"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
-                <path
-                  d="M15.8 8.2a3 3 0 0 1 0 4.3l-2.1 2.1a3 3 0 0 1-4.3 0"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
-              </svg>
-            </span>
-            Importar URL
+            Catalogo
           </button>
         </div>
         <input
@@ -411,6 +501,93 @@ export default function Dashboard() {
           type="file"
         />
       </header>
+
+      {isCatalogOpen ? (
+        <div
+          aria-label="Catalogo de colecciones"
+          aria-modal="true"
+          className="library-catalog-overlay"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              handleCloseCatalog()
+            }
+          }}
+          role="dialog"
+        >
+          <section className="library-catalog-panel">
+            <header className="library-catalog-header">
+              <div className="library-catalog-heading">
+                <h2 className="library-catalog-title">Catalogo de colecciones</h2>
+                <p className="library-catalog-subtitle">Agrega figuras sin salir de la app.</p>
+              </div>
+              <button className="library-catalog-close" onClick={handleCloseCatalog} type="button">
+                Cerrar
+              </button>
+            </header>
+
+            <div className="library-catalog-actions">
+              <button
+                className="dashboard-action dashboard-action--import"
+                onClick={handleImportFromFileClick}
+                type="button"
+              >
+                Importar archivo local
+              </button>
+              <button
+                className="dashboard-action"
+                disabled={catalogLoadState === 'loading'}
+                onClick={() => {
+                  void loadCatalogCollections()
+                }}
+                type="button"
+              >
+                {catalogLoadState === 'loading' ? 'Actualizando...' : 'Actualizar catalogo'}
+              </button>
+            </div>
+
+            {catalogLoadState === 'loading' ? (
+              <p className="library-catalog-state">Cargando colecciones...</p>
+            ) : null}
+            {catalogError ? (
+              <p className="library-catalog-state library-catalog-state--error">
+                {catalogError} Se muestra una lista de respaldo local.
+              </p>
+            ) : null}
+
+            {catalogCollections.length > 0 ? (
+              <div className="library-catalog-grid">
+                {catalogCollections.map((collection) => {
+                  const isAddingThisCollection = collectionBeingAddedId === collection.id
+                  const isAddingAnotherCollection =
+                    !!collectionBeingAddedId && collectionBeingAddedId !== collection.id
+
+                  return (
+                    <article className="library-catalog-card" key={collection.id}>
+                      <h3 className="library-catalog-card-title">{collection.name}</h3>
+                      <p className="library-catalog-card-meta">{collection.author ?? 'Comunidad'}</p>
+                      <p className="library-catalog-card-description">
+                        {collection.description ?? 'Coleccion de figuras lista para importar.'}
+                      </p>
+                      <button
+                        className="dashboard-action library-catalog-add"
+                        disabled={isAddingAnotherCollection || isAddingThisCollection}
+                        onClick={() => {
+                          void handleAddCollection(collection)
+                        }}
+                        type="button"
+                      >
+                        {isAddingThisCollection ? 'Agregando...' : 'Agregar'}
+                      </button>
+                    </article>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="library-catalog-empty">No hay colecciones disponibles.</p>
+            )}
+          </section>
+        </div>
+      ) : null}
 
       <main className="dashboard-main">
         <section className="dashboard-canvas">
