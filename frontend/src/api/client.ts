@@ -11,13 +11,6 @@ export interface LoginResponse {
 }
 
 class ApiClient {
-  private getAuthHeader(token?: string): Record<string, string> {
-    if (token) {
-      return { Authorization: `Bearer ${token}` }
-    }
-    return {}
-  }
-
   async login(credentials: LoginCredentials): Promise<LoginResponse> {
     const response = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
