@@ -21,6 +21,7 @@ type CatalogCollection = {
   source: string
   description?: string
   author?: string
+  preview?: string
 }
 
 const LIBRARY_CATALOG_URL =
@@ -89,7 +90,43 @@ const extractLibraryItems = (parsed: unknown): unknown[] | null => {
     return parsed.libraryItems
   }
 
+  if (Array.isArray(parsed.library)) {
+    return parsed.library
+  }
+
+  if (isRecord(parsed.library)) {
+    if (Array.isArray(parsed.library.libraryItems)) {
+      return parsed.library.libraryItems
+    }
+
+    if (Array.isArray(parsed.library.library)) {
+      return parsed.library.library
+    }
+  }
+
   return null
+}
+
+const extractCatalogPreview = (entry: Record<string, unknown>): string | undefined => {
+  const preview = entry.preview
+
+  if (typeof preview === 'string' && preview.trim()) {
+    return preview.trim()
+  }
+
+  if (!isRecord(preview)) {
+    return undefined
+  }
+
+  const candidatePreviewFields = ['url', 'src', 'image', 'path'] as const
+  for (const field of candidatePreviewFields) {
+    const fieldValue = preview[field]
+    if (typeof fieldValue === 'string' && fieldValue.trim()) {
+      return fieldValue.trim()
+    }
+  }
+
+  return undefined
 }
 
 const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
@@ -109,6 +146,8 @@ const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
       return []
     }
 
+    const preview = extractCatalogPreview(entry)
+
     const description =
       typeof entry.description === 'string' && entry.description.trim()
         ? entry.description.trim()
@@ -124,6 +163,7 @@ const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
         id: `${source}-${index}`,
         name,
         source,
+        preview: preview ? resolveCatalogAssetUrl(preview) : undefined,
         description,
         author,
       },
@@ -131,10 +171,14 @@ const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
   })
 }
 
-const resolveCatalogSourceUrl = (source: string): string => {
+const resolveCatalogAssetUrl = (source: string): string => {
   try {
     const directUrl = new URL(source)
-    if (directUrl.protocol === 'http:' || directUrl.protocol === 'https:') {
+    if (
+      directUrl.protocol === 'http:' ||
+      directUrl.protocol === 'https:' ||
+      directUrl.protocol === 'data:'
+    ) {
       return directUrl.toString()
     }
   } catch {
@@ -142,6 +186,43 @@ const resolveCatalogSourceUrl = (source: string): string => {
   }
 
   return new URL(source.replace(/^\/+/, ''), LIBRARY_SOURCE_BASE_URL).toString()
+}
+
+type CatalogPreviewProps = {
+  collectionName: string
+  previewUrl?: string
+}
+
+const CatalogPreview = ({ collectionName, previewUrl }: CatalogPreviewProps) => {
+  const [hasPreviewError, setHasPreviewError] = useState(false)
+
+  useEffect(() => {
+    setHasPreviewError(false)
+  }, [previewUrl])
+
+  const showPreviewImage = Boolean(previewUrl) && !hasPreviewError
+  const fallbackLabel = collectionName.trim().charAt(0).toUpperCase() || '?'
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`library-catalog-card-preview${showPreviewImage ? '' : ' is-fallback'}`}
+    >
+      {showPreviewImage ? (
+        <img
+          alt=""
+          className="library-catalog-card-preview-image"
+          loading="lazy"
+          onError={() => {
+            setHasPreviewError(true)
+          }}
+          src={previewUrl}
+        />
+      ) : (
+        <span className="library-catalog-card-preview-fallback">{fallbackLabel}</span>
+      )}
+    </div>
+  )
 }
 
 export default function Dashboard() {
@@ -317,7 +398,7 @@ export default function Dashboard() {
     setCollectionBeingAddedId(collection.id)
 
     try {
-      const sourceUrl = resolveCatalogSourceUrl(collection.source)
+      const sourceUrl = resolveCatalogAssetUrl(collection.source)
       const response = await fetch(sourceUrl)
       if (!response.ok) {
         throw new Error(`No se pudo descargar la coleccion (HTTP ${response.status}).`)
@@ -563,6 +644,10 @@ export default function Dashboard() {
 
                   return (
                     <article className="library-catalog-card" key={collection.id}>
+                      <CatalogPreview
+                        collectionName={collection.name}
+                        previewUrl={collection.preview}
+                      />
                       <h3 className="library-catalog-card-title">{collection.name}</h3>
                       <p className="library-catalog-card-meta">{collection.author ?? 'Comunidad'}</p>
                       <p className="library-catalog-card-description">
