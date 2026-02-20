@@ -1,7 +1,8 @@
 .dashboard-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0;
   width: 100%;
   height: 100%;
   min-height: 100dvh;
@@ -9,51 +10,84 @@
   padding-right: max(0.5rem, env(safe-area-inset-right));
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
   padding-left: max(0.5rem, env(safe-area-inset-left));
+  overflow: hidden;
   background: linear-gradient(180deg, #eef3f9 0%, #e4ebf5 100%);
 }
 
 .dashboard-topbar {
+  position: fixed;
+  top: max(0.5rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 72;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  min-height: 3.25rem;
-  padding: 0.35rem 0.5rem;
-  background-color: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(124, 141, 166, 0.28);
-  border-radius: 0.875rem;
-  backdrop-filter: blur(7px);
+  gap: 0.35rem;
+  max-width: calc(100vw - max(1.1rem, env(safe-area-inset-left) + env(safe-area-inset-right)));
+  padding: 0.34rem;
+  border: 1px solid rgba(124, 141, 166, 0.35);
+  border-radius: 999px;
+  background-color: rgba(248, 252, 255, 0.92);
+  box-shadow: 0 10px 28px rgba(12, 30, 53, 0.24);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
 }
 
-.dashboard-brand {
-  min-width: 0;
+.dashboard-topbar > * {
+  pointer-events: auto;
 }
 
-.dashboard-title {
-  font-size: 1rem;
-  line-height: 1.2;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  color: #1e2b3b;
+.dashboard-topbar.is-expanded {
+  border-radius: 0.92rem;
 }
 
-.dashboard-user {
-  margin-top: 0.125rem;
-  font-size: 0.8rem;
-  color: #42566f;
+.dashboard-toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.45rem;
+  min-width: 2.45rem;
+  padding: 0.5rem 0.72rem;
+  border: 1px solid #c0d0e2;
+  border-radius: 0.68rem;
+  background-color: #edf5ff;
+  color: #1f3046;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dashboard-toolbar-toggle:hover {
+  background: #e5efff;
+}
+
+.dashboard-toolbar-toggle:focus-visible {
+  outline: 2px solid #2e6de4;
+  outline-offset: 2px;
+}
+
+.dashboard-toolbar-toggle-label {
+  margin-left: 0.3rem;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .dashboard-actions {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
   max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.dashboard-actions::-webkit-scrollbar {
+  display: none;
 }
 
 .dashboard-action {
@@ -79,6 +113,13 @@
   background-color: #eef5ff;
 }
 
+.dashboard-topbar .dashboard-action {
+  min-height: 2.45rem;
+  min-width: 2.45rem;
+  padding: 0.5rem 0.74rem;
+  border-radius: 0.68rem;
+}
+
 .dashboard-action-icon {
   display: inline-flex;
   width: 1.05rem;
@@ -90,6 +131,23 @@
   width: 100%;
   height: 100%;
   stroke: currentColor;
+}
+
+.dashboard-action-label {
+  white-space: nowrap;
+}
+
+.dashboard-topbar:not(.is-expanded) .dashboard-action-label,
+.dashboard-topbar:not(.is-expanded) .dashboard-toolbar-toggle-label {
+  display: none;
+}
+
+.dashboard-topbar:not(.is-expanded) .dashboard-action-icon {
+  margin-right: 0;
+}
+
+.dashboard-topbar.is-expanded .dashboard-action-icon {
+  margin-right: 0.36rem;
 }
 
 .dashboard-action--pen-mode.is-active {
@@ -293,6 +351,7 @@
 .dashboard-main {
   flex: 1;
   min-height: 0;
+  padding-top: 0;
 }
 
 .dashboard-canvas {
@@ -332,12 +391,22 @@
 
 @media (pointer: coarse) {
   .dashboard-topbar {
-    min-height: 3.5rem;
+    top: max(0.58rem, env(safe-area-inset-top));
   }
 
   .dashboard-action {
     min-height: 3rem;
     min-width: 3rem;
+  }
+
+  .dashboard-topbar .dashboard-action,
+  .dashboard-topbar .dashboard-toolbar-toggle {
+    min-height: 2.68rem;
+    min-width: 2.68rem;
+  }
+
+  .dashboard-topbar .dashboard-action {
+    padding: 0.56rem 0.82rem;
   }
 
   .dashboard-canvas .excalidraw {

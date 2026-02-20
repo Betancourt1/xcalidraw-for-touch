@@ -230,6 +230,13 @@ export default function Dashboard() {
   const libraryFileInputRef = useRef<HTMLInputElement | null>(null)
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null)
   const [penModeEnabled, setPenModeEnabled] = useState(false)
+  const [isToolbarExpanded, setIsToolbarExpanded] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+
+    return !window.matchMedia('(pointer: coarse)').matches
+  })
   const [isCatalogOpen, setIsCatalogOpen] = useState(false)
   const [catalogLoadState, setCatalogLoadState] = useState<CatalogLoadState>('idle')
   const [catalogCollections, setCatalogCollections] = useState<CatalogCollection[]>(FALLBACK_CATALOG)
@@ -426,6 +433,10 @@ export default function Dashboard() {
     showToast(nextPenMode ? 'Solo stylus activo' : 'Touch y stylus activos', 1800)
   }
 
+  const handleToggleToolbarView = () => {
+    setIsToolbarExpanded((current) => !current)
+  }
+
   useEffect(() => {
     const handleLibraryExternalLink = (event: MouseEvent) => {
       const target = event.target
@@ -525,14 +536,27 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-shell">
-      <header className="dashboard-topbar">
-        <div className="dashboard-brand">
-          <h1 className="dashboard-title">Excalidraw</h1>
-          <p className="dashboard-user">Modo dibujo tactil</p>
-        </div>
-
+      <header className={`dashboard-topbar${isToolbarExpanded ? ' is-expanded' : ''}`}>
+        <button
+          aria-label={isToolbarExpanded ? 'Compactar barra de acciones' : 'Expandir barra de acciones'}
+          aria-pressed={isToolbarExpanded}
+          className="dashboard-toolbar-toggle"
+          onClick={handleToggleToolbarView}
+          title={isToolbarExpanded ? 'Compactar barra de acciones' : 'Expandir barra de acciones'}
+          type="button"
+        >
+          <span aria-hidden="true" className="dashboard-action-icon">
+            <svg fill="none" viewBox="0 0 24 24">
+              <path d="M5 7h14M5 12h14M5 17h14" strokeLinecap="round" strokeWidth="1.9" />
+            </svg>
+          </span>
+          <span className="dashboard-toolbar-toggle-label">
+            {isToolbarExpanded ? 'Compactar' : 'Expandir'}
+          </span>
+        </button>
         <div className="dashboard-actions">
           <button
+            aria-label={penModeEnabled ? 'Activar solo stylus' : 'Activar touch y stylus'}
             aria-pressed={penModeEnabled}
             className={`dashboard-action dashboard-action--pen-mode${penModeEnabled ? ' is-active' : ''}`}
             onClick={handleTogglePenMode}
@@ -555,12 +579,26 @@ export default function Dashboard() {
                 )}
               </svg>
             </span>
-            {penModeEnabled ? 'Solo stylus' : 'Touch + stylus'}
-          </button>
-          <button className="dashboard-action" onClick={handleNewCanvas} type="button">
-            Lienzo nuevo
+            <span className="dashboard-action-label">
+              {penModeEnabled ? 'Solo stylus' : 'Touch + stylus'}
+            </span>
           </button>
           <button
+            aria-label="Crear lienzo nuevo"
+            className="dashboard-action"
+            onClick={handleNewCanvas}
+            title="Crear lienzo nuevo"
+            type="button"
+          >
+            <span aria-hidden="true" className="dashboard-action-icon">
+              <svg fill="none" viewBox="0 0 24 24">
+                <path d="M12 5v14M5 12h14" strokeLinecap="round" strokeWidth="1.9" />
+              </svg>
+            </span>
+            <span className="dashboard-action-label">Lienzo nuevo</span>
+          </button>
+          <button
+            aria-label="Abrir catalogo de colecciones"
             className="dashboard-action dashboard-action--import"
             onClick={handleOpenCatalog}
             title="Abrir catalogo de colecciones"
@@ -571,7 +609,7 @@ export default function Dashboard() {
                 <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" strokeWidth="1.8" />
               </svg>
             </span>
-            Catalogo
+            <span className="dashboard-action-label">Catalogo</span>
           </button>
         </div>
         <input
