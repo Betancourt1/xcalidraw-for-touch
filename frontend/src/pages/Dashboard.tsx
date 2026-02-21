@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
-import type { ExcalidrawImperativeAPI, UIOptions } from '@excalidraw/excalidraw/types'
+import type { ExcalidrawImperativeAPI, UIAppState, UIOptions } from '@excalidraw/excalidraw/types'
 import '../App.css'
 
 type ActiveTool = ReturnType<ExcalidrawImperativeAPI['getAppState']>['activeTool']
@@ -22,6 +22,17 @@ type CatalogCollection = {
   description?: string
   author?: string
   preview?: string
+}
+type CatalogLibraryItem = {
+  id: string
+  name: string
+  elements: Record<string, unknown>[]
+  raw: unknown
+}
+type CatalogSelectionState = {
+  collection: CatalogCollection
+  items: CatalogLibraryItem[]
+  selectedItemIds: string[]
 }
 
 const LIBRARY_CATALOG_URL =
@@ -77,6 +88,36 @@ const FALLBACK_CATALOG: CatalogCollection[] = [
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
+const toFiniteNumber = (value: unknown, fallback = 0): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+
+const clamp = (value: number, minValue: number, maxValue: number): number =>
+  Math.min(maxValue, Math.max(minValue, value))
+
+const sanitizeColor = (value: unknown, fallback: string): string =>
+  typeof value === 'string' && value.trim() ? value.trim() : fallback
+
+const extractRecordArray = (value: unknown): Record<string, unknown>[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter((entry): entry is Record<string, unknown> => isRecord(entry))
+}
+
+const extractItemElements = (libraryItem: Record<string, unknown>): Record<string, unknown>[] => {
+  const directElements = extractRecordArray(libraryItem.elements)
+  if (directElements.length > 0) {
+    return directElements
+  }
+
+  if (!isRecord(libraryItem.data)) {
+    return []
+  }
+
+  return extractRecordArray(libraryItem.data.elements)
+}
+
 const extractLibraryItems = (parsed: unknown): unknown[] | null => {
   if (Array.isArray(parsed)) {
     return parsed
@@ -88,6 +129,10 @@ const extractLibraryItems = (parsed: unknown): unknown[] | null => {
 
   if (Array.isArray(parsed.libraryItems)) {
     return parsed.libraryItems
+  }
+
+  if (Array.isArray(parsed.items)) {
+    return parsed.items
   }
 
   if (Array.isArray(parsed.library)) {
@@ -102,9 +147,119 @@ const extractLibraryItems = (parsed: unknown): unknown[] | null => {
     if (Array.isArray(parsed.library.library)) {
       return parsed.library.library
     }
+
+    if (Array.isArray(parsed.library.items)) {
+      return parsed.library.items
+    }
   }
 
   return null
+}
+
+const parseLibraryItemsFromText = (rawText: string): unknown[] => {
+  let parsedJson: unknown
+
+  try {
+    parsedJson = JSON.parse(rawText) as unknown
+  } catch {
+    throw new Error('El contenido no es JSON valido.')
+  }
+
+  const libraryItems = extractLibraryItems(parsedJson)
+  if (!libraryItems || libraryItems.length === 0) {
+    throw new Error('No se encontraron figuras para importar.')
+  }
+
+  return libraryItems
+}
+
+const toCatalogLibraryItems = (libraryItems: unknown[]): CatalogLibraryItem[] =>
+  libraryItems.flatMap((entry, index) => {
+    if (!isRecord(entry)) {
+      return []
+    }
+
+    const rawId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : `item-${index + 1}`
+    const rawName =
+      typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : `Figura ${index + 1}`
+
+    return [
+      {
+        id: `${rawId}-${index}`,
+        name: rawName,
+        elements: extractItemElements(entry),
+        raw: entry,
+      },
+    ]
+  })
+
+const extractAbsolutePoints = (element: Record<string, unknown>): Array<{ x: number; y: number }> => {
+  if (!Array.isArray(element.points)) {
+    return []
+  }
+
+  const baseX = toFiniteNumber(element.x)
+  const baseY = toFiniteNumber(element.y)
+
+  return element.points.flatMap((point) => {
+    if (!Array.isArray(point) || point.length < 2) {
+      return []
+    }
+
+    const x = toFiniteNumber(point[0], Number.NaN)
+    const y = toFiniteNumber(point[1], Number.NaN)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return []
+    }
+
+    return [{ x: baseX + x, y: baseY + y }]
+  })
+}
+
+const computeItemPreviewBounds = (
+  elements: Record<string, unknown>[],
+): { minX: number; minY: number; width: number; height: number } => {
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  const expandBounds = (x: number, y: number) => {
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+
+  elements.forEach((element) => {
+    const x = toFiniteNumber(element.x)
+    const y = toFiniteNumber(element.y)
+    const width = toFiniteNumber(element.width)
+    const height = toFiniteNumber(element.height)
+
+    expandBounds(x, y)
+    expandBounds(x + width, y + height)
+
+    const points = extractAbsolutePoints(element)
+    points.forEach((point) => {
+      expandBounds(point.x, point.y)
+    })
+  })
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return { minX: 0, minY: 0, width: 120, height: 84 }
+  }
+
+  const padding = 12
+  const normalizedWidth = Math.max(maxX - minX, 40)
+  const normalizedHeight = Math.max(maxY - minY, 30)
+
+  return {
+    minX: minX - padding,
+    minY: minY - padding,
+    width: normalizedWidth + padding * 2,
+    height: normalizedHeight + padding * 2,
+  }
 }
 
 const extractCatalogPreview = (entry: Record<string, unknown>): string | undefined => {
@@ -225,23 +380,146 @@ const CatalogPreview = ({ collectionName, previewUrl }: CatalogPreviewProps) => 
   )
 }
 
+type LibraryItemPreviewProps = {
+  itemName: string
+  elements: Record<string, unknown>[]
+}
+
+const LibraryItemPreview = ({ itemName, elements }: LibraryItemPreviewProps) => {
+  const hasRenderableElements = elements.length > 0
+  const bounds = useMemo(() => computeItemPreviewBounds(elements), [elements])
+  const fallbackLabel = itemName.trim().charAt(0).toUpperCase() || '?'
+
+  return (
+    <div className={`library-item-preview${hasRenderableElements ? '' : ' is-fallback'}`}>
+      {hasRenderableElements ? (
+        <svg
+          aria-hidden="true"
+          className="library-item-preview-svg"
+          preserveAspectRatio="xMidYMid meet"
+          viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
+        >
+          {elements.map((element, index) => {
+            const type = typeof element.type === 'string' ? element.type : 'rectangle'
+            const rawX = toFiniteNumber(element.x)
+            const rawY = toFiniteNumber(element.y)
+            const rawWidth = toFiniteNumber(element.width)
+            const rawHeight = toFiniteNumber(element.height)
+            const x = Math.min(rawX, rawX + rawWidth)
+            const y = Math.min(rawY, rawY + rawHeight)
+            const width = Math.max(Math.abs(rawWidth), 1)
+            const height = Math.max(Math.abs(rawHeight), 1)
+            const stroke = sanitizeColor(element.strokeColor, '#2d4c70')
+            const backgroundColor = sanitizeColor(element.backgroundColor, 'transparent')
+            const fill = backgroundColor === 'transparent' ? 'none' : backgroundColor
+            const strokeWidth = clamp(toFiniteNumber(element.strokeWidth, 2), 0.8, 6)
+            const opacity = clamp(toFiniteNumber(element.opacity, 100), 0, 100) / 100
+            const key = `${type}-${index}`
+
+            if (type === 'ellipse') {
+              return (
+                <ellipse
+                  cx={x + width / 2}
+                  cy={y + height / 2}
+                  fill={fill}
+                  key={key}
+                  opacity={opacity}
+                  rx={width / 2}
+                  ry={height / 2}
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                />
+              )
+            }
+
+            if (type === 'diamond') {
+              const points = `${x + width / 2},${y} ${x + width},${y + height / 2} ${x + width / 2},${
+                y + height
+              } ${x},${y + height / 2}`
+              return (
+                <polygon
+                  fill={fill}
+                  key={key}
+                  opacity={opacity}
+                  points={points}
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                />
+              )
+            }
+
+            if (type === 'line' || type === 'arrow' || type === 'freedraw' || type === 'draw') {
+              const points = extractAbsolutePoints(element)
+              const polylinePoints =
+                points.length > 0
+                  ? points.map((point) => `${point.x},${point.y}`).join(' ')
+                  : `${rawX},${rawY} ${rawX + rawWidth},${rawY + rawHeight}`
+
+              return (
+                <polyline
+                  fill="none"
+                  key={key}
+                  opacity={opacity}
+                  points={polylinePoints}
+                  stroke={stroke}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={strokeWidth}
+                />
+              )
+            }
+
+            if (type === 'text') {
+              const textValue = typeof element.text === 'string' && element.text.trim() ? element.text : 'TXT'
+              const fontSize = clamp(toFiniteNumber(element.fontSize, 18), 10, 36)
+              return (
+                <text
+                  fill={stroke}
+                  fontSize={fontSize}
+                  key={key}
+                  opacity={opacity}
+                  x={x}
+                  y={y + fontSize}
+                >
+                  {textValue.slice(0, 16)}
+                </text>
+              )
+            }
+
+            return (
+              <rect
+                fill={fill}
+                height={height}
+                key={key}
+                opacity={opacity}
+                rx={6}
+                ry={6}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                width={width}
+                x={x}
+                y={y}
+              />
+            )
+          })}
+        </svg>
+      ) : (
+        <span className="library-item-preview-fallback">{fallbackLabel}</span>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const libraryFileInputRef = useRef<HTMLInputElement | null>(null)
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null)
-  const [penModeEnabled, setPenModeEnabled] = useState(false)
-  const [isToolbarExpanded, setIsToolbarExpanded] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false
-    }
-
-    return !window.matchMedia('(pointer: coarse)').matches
-  })
   const [isCatalogOpen, setIsCatalogOpen] = useState(false)
   const [catalogLoadState, setCatalogLoadState] = useState<CatalogLoadState>('idle')
   const [catalogCollections, setCatalogCollections] = useState<CatalogCollection[]>(FALLBACK_CATALOG)
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [collectionBeingAddedId, setCollectionBeingAddedId] = useState<string | null>(null)
+  const [catalogSelection, setCatalogSelection] = useState<CatalogSelectionState | null>(null)
   const touchPointerIdsRef = useRef(new Set<number>())
   const toolBeforeTouchRef = useRef<ActiveTool | null>(null)
 
@@ -296,18 +574,7 @@ export default function Dashboard() {
   }
 
   const importLibraryFromText = async (rawText: string): Promise<number> => {
-    let parsedJson: unknown
-
-    try {
-      parsedJson = JSON.parse(rawText) as unknown
-    } catch {
-      throw new Error('El contenido no es JSON valido.')
-    }
-
-    const libraryItems = extractLibraryItems(parsedJson)
-    if (!libraryItems || libraryItems.length === 0) {
-      throw new Error('No se encontraron figuras para importar.')
-    }
+    const libraryItems = parseLibraryItemsFromText(rawText)
 
     await importLibraryItems(libraryItems)
     return libraryItems.length
@@ -355,6 +622,7 @@ export default function Dashboard() {
       return
     }
 
+    setCatalogSelection(null)
     setIsCatalogOpen(false)
   }
 
@@ -397,7 +665,7 @@ export default function Dashboard() {
     fileReader.readAsText(selectedFile)
   }
 
-  const handleAddCollection = async (collection: CatalogCollection) => {
+  const handlePreviewCollection = async (collection: CatalogCollection) => {
     if (collectionBeingAddedId) {
       return
     }
@@ -412,11 +680,105 @@ export default function Dashboard() {
       }
 
       const collectionText = await response.text()
-      const totalImported = await importLibraryFromText(collectionText)
-      showToast(`Coleccion agregada: ${collection.name} (${totalImported} figuras).`)
+      const parsedLibraryItems = parseLibraryItemsFromText(collectionText)
+      const parsedCatalogItems = toCatalogLibraryItems(parsedLibraryItems)
+
+      if (parsedCatalogItems.length === 0) {
+        throw new Error('La coleccion no contiene figuras compatibles para previsualizar.')
+      }
+
+      setCatalogSelection({
+        collection,
+        items: parsedCatalogItems,
+        selectedItemIds: [],
+      })
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : 'No se pudo agregar la coleccion seleccionada.',
+        error instanceof Error ? error.message : 'No se pudo cargar la previsualizacion de la coleccion.',
+        3200,
+      )
+    } finally {
+      setCollectionBeingAddedId(null)
+    }
+  }
+
+  const handleCloseCatalogSelection = () => {
+    if (collectionBeingAddedId) {
+      return
+    }
+
+    setCatalogSelection(null)
+  }
+
+  const handleToggleCatalogItemSelection = (itemId: string) => {
+    setCatalogSelection((current) => {
+      if (!current) {
+        return current
+      }
+
+      const alreadySelected = current.selectedItemIds.includes(itemId)
+      return {
+        ...current,
+        selectedItemIds: alreadySelected
+          ? current.selectedItemIds.filter((selectedId) => selectedId !== itemId)
+          : [...current.selectedItemIds, itemId],
+      }
+    })
+  }
+
+  const handleSelectAllCatalogItems = () => {
+    setCatalogSelection((current) => {
+      if (!current) {
+        return current
+      }
+
+      return {
+        ...current,
+        selectedItemIds: current.items.map((item) => item.id),
+      }
+    })
+  }
+
+  const handleClearCatalogSelection = () => {
+    setCatalogSelection((current) => {
+      if (!current) {
+        return current
+      }
+
+      return {
+        ...current,
+        selectedItemIds: [],
+      }
+    })
+  }
+
+  const handleImportCatalogSelection = async (mode: 'selected' | 'all') => {
+    if (!catalogSelection || collectionBeingAddedId) {
+      return
+    }
+
+    const selectedIdSet = new Set(catalogSelection.selectedItemIds)
+    const itemsToImport =
+      mode === 'all'
+        ? catalogSelection.items
+        : catalogSelection.items.filter((item) => selectedIdSet.has(item.id))
+
+    if (itemsToImport.length === 0) {
+      showToast('Selecciona al menos una figura para importar.', 2600)
+      return
+    }
+
+    setCollectionBeingAddedId(catalogSelection.collection.id)
+
+    try {
+      await importLibraryItems(itemsToImport.map((item) => item.raw))
+      showToast(
+        `Coleccion agregada: ${catalogSelection.collection.name} (${itemsToImport.length} figuras).`,
+      )
+      setCatalogSelection(null)
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'No se pudieron agregar las figuras seleccionadas.',
         3200,
       )
     } finally {
@@ -431,10 +793,6 @@ export default function Dashboard() {
     const nextPenMode = !api.getAppState().penMode
     api.updateScene({ appState: { penMode: nextPenMode } })
     showToast(nextPenMode ? 'Solo stylus activo' : 'Touch y stylus activos', 1800)
-  }
-
-  const handleToggleToolbarView = () => {
-    setIsToolbarExpanded((current) => !current)
   }
 
   useEffect(() => {
@@ -471,7 +829,6 @@ export default function Dashboard() {
     if (!excalidrawApi) return
 
     excalidrawApi.setActiveTool({ type: 'freedraw' })
-    setPenModeEnabled(excalidrawApi.getAppState().penMode)
     const touchPointerIds = touchPointerIdsRef.current
 
     const restoreToolAfterTouch = () => {
@@ -512,9 +869,6 @@ export default function Dashboard() {
       touchPointerIds.delete(event.pointerId)
       restoreToolAfterTouch()
     })
-    const unsubscribeChange = excalidrawApi.onChange((_elements, appState) => {
-      setPenModeEnabled(appState.penMode)
-    })
 
     const handlePointerCancel = (event: PointerEvent) => {
       if (event.pointerType !== 'touch') return
@@ -527,99 +881,91 @@ export default function Dashboard() {
     return () => {
       unsubscribePointerDown()
       unsubscribePointerUp()
-      unsubscribeChange()
       window.removeEventListener('pointercancel', handlePointerCancel)
       touchPointerIds.clear()
       toolBeforeTouchRef.current = null
     }
   }, [excalidrawApi])
 
-  return (
-    <div className="dashboard-shell">
-      <header className={`dashboard-topbar${isToolbarExpanded ? ' is-expanded' : ''}`}>
+  const selectedCatalogItemsCount = catalogSelection?.selectedItemIds.length ?? 0
+  const totalCatalogItemsCount = catalogSelection?.items.length ?? 0
+  const isCatalogSelectionImporting =
+    !!catalogSelection && collectionBeingAddedId === catalogSelection.collection.id
+
+  const renderTopRightUI = (_isMobile: boolean, appState: UIAppState) => {
+    const isPenMode = appState.penMode
+
+    return (
+      <div aria-label="Acciones rapidas" className="excal-toolbar-actions" role="toolbar">
         <button
-          aria-label={isToolbarExpanded ? 'Compactar barra de acciones' : 'Expandir barra de acciones'}
-          aria-pressed={isToolbarExpanded}
-          className="dashboard-toolbar-toggle"
-          onClick={handleToggleToolbarView}
-          title={isToolbarExpanded ? 'Compactar barra de acciones' : 'Expandir barra de acciones'}
+          aria-label={isPenMode ? 'Activar touch y stylus' : 'Activar solo stylus'}
+          aria-pressed={isPenMode}
+          className={`dashboard-action excal-toolbar-button dashboard-action--pen-mode${
+            isPenMode ? ' is-active' : ''
+          }`}
+          onClick={handleTogglePenMode}
+          title={isPenMode ? 'Solo stylus para dibujar' : 'Touch y stylus para dibujar'}
           type="button"
         >
           <span aria-hidden="true" className="dashboard-action-icon">
             <svg fill="none" viewBox="0 0 24 24">
-              <path d="M5 7h14M5 12h14M5 17h14" strokeLinecap="round" strokeWidth="1.9" />
+              <path
+                d="M4 20l3-1l9-9a2.1 2.1 0 0 0 0-3l-1-1a2.1 2.1 0 0 0-3 0L3 15l-1 3z"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+              />
+              <path d="M12 6l4 4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+              {isPenMode ? (
+                <path d="M5 5l14 14" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              ) : (
+                <circle cx="18.2" cy="18.2" r="2.3" fill="currentColor" />
+              )}
             </svg>
           </span>
-          <span className="dashboard-toolbar-toggle-label">
-            {isToolbarExpanded ? 'Compactar' : 'Expandir'}
-          </span>
+          <span className="dashboard-action-label">{isPenMode ? 'Solo stylus' : 'Touch + stylus'}</span>
         </button>
-        <div className="dashboard-actions">
-          <button
-            aria-label={penModeEnabled ? 'Activar solo stylus' : 'Activar touch y stylus'}
-            aria-pressed={penModeEnabled}
-            className={`dashboard-action dashboard-action--pen-mode${penModeEnabled ? ' is-active' : ''}`}
-            onClick={handleTogglePenMode}
-            title={penModeEnabled ? 'Solo stylus para dibujar' : 'Touch y stylus para dibujar'}
-            type="button"
-          >
-            <span aria-hidden="true" className="dashboard-action-icon">
-              <svg fill="none" viewBox="0 0 24 24">
-                <path
-                  d="M4 20l3-1l9-9a2.1 2.1 0 0 0 0-3l-1-1a2.1 2.1 0 0 0-3 0L3 15l-1 3z"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                />
-                <path d="M12 6l4 4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-                {penModeEnabled ? (
-                  <path d="M5 5l14 14" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                ) : (
-                  <circle cx="18.2" cy="18.2" r="2.3" fill="currentColor" />
-                )}
-              </svg>
-            </span>
-            <span className="dashboard-action-label">
-              {penModeEnabled ? 'Solo stylus' : 'Touch + stylus'}
-            </span>
-          </button>
-          <button
-            aria-label="Crear lienzo nuevo"
-            className="dashboard-action"
-            onClick={handleNewCanvas}
-            title="Crear lienzo nuevo"
-            type="button"
-          >
-            <span aria-hidden="true" className="dashboard-action-icon">
-              <svg fill="none" viewBox="0 0 24 24">
-                <path d="M12 5v14M5 12h14" strokeLinecap="round" strokeWidth="1.9" />
-              </svg>
-            </span>
-            <span className="dashboard-action-label">Lienzo nuevo</span>
-          </button>
-          <button
-            aria-label="Abrir catalogo de colecciones"
-            className="dashboard-action dashboard-action--import"
-            onClick={handleOpenCatalog}
-            title="Abrir catalogo de colecciones"
-            type="button"
-          >
-            <span aria-hidden="true" className="dashboard-action-icon">
-              <svg fill="none" viewBox="0 0 24 24">
-                <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" strokeWidth="1.8" />
-              </svg>
-            </span>
-            <span className="dashboard-action-label">Catalogo</span>
-          </button>
-        </div>
-        <input
-          accept=".excalidrawlib,.json,application/json"
-          className="dashboard-file-input"
-          onChange={handleFileSelected}
-          ref={libraryFileInputRef}
-          type="file"
-        />
-      </header>
+        <button
+          aria-label="Crear lienzo nuevo"
+          className="dashboard-action excal-toolbar-button"
+          onClick={handleNewCanvas}
+          title="Crear lienzo nuevo"
+          type="button"
+        >
+          <span aria-hidden="true" className="dashboard-action-icon">
+            <svg fill="none" viewBox="0 0 24 24">
+              <path d="M12 5v14M5 12h14" strokeLinecap="round" strokeWidth="1.9" />
+            </svg>
+          </span>
+          <span className="dashboard-action-label">Lienzo nuevo</span>
+        </button>
+        <button
+          aria-label="Abrir catalogo de colecciones"
+          className="dashboard-action dashboard-action--import excal-toolbar-button"
+          onClick={handleOpenCatalog}
+          title="Abrir catalogo de colecciones"
+          type="button"
+        >
+          <span aria-hidden="true" className="dashboard-action-icon">
+            <svg fill="none" viewBox="0 0 24 24">
+              <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" strokeWidth="1.8" />
+            </svg>
+          </span>
+          <span className="dashboard-action-label">Catalogo</span>
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="dashboard-shell">
+      <input
+        accept=".excalidrawlib,.json,application/json"
+        className="dashboard-file-input"
+        onChange={handleFileSelected}
+        ref={libraryFileInputRef}
+        type="file"
+      />
 
       {isCatalogOpen ? (
         <div
@@ -636,77 +982,168 @@ export default function Dashboard() {
           <section className="library-catalog-panel">
             <header className="library-catalog-header">
               <div className="library-catalog-heading">
-                <h2 className="library-catalog-title">Catalogo de colecciones</h2>
-                <p className="library-catalog-subtitle">Agrega figuras sin salir de la app.</p>
+                <h2 className="library-catalog-title">
+                  {catalogSelection ? catalogSelection.collection.name : 'Catalogo de colecciones'}
+                </h2>
+                <p className="library-catalog-subtitle">
+                  {catalogSelection
+                    ? 'Previsualiza y selecciona solo las figuras que quieras importar.'
+                    : 'Agrega figuras sin salir de la app.'}
+                </p>
               </div>
               <button className="library-catalog-close" onClick={handleCloseCatalog} type="button">
                 Cerrar
               </button>
             </header>
 
-            <div className="library-catalog-actions">
-              <button
-                className="dashboard-action dashboard-action--import"
-                onClick={handleImportFromFileClick}
-                type="button"
-              >
-                Importar archivo local
-              </button>
-              <button
-                className="dashboard-action"
-                disabled={catalogLoadState === 'loading'}
-                onClick={() => {
-                  void loadCatalogCollections()
-                }}
-                type="button"
-              >
-                {catalogLoadState === 'loading' ? 'Actualizando...' : 'Actualizar catalogo'}
-              </button>
-            </div>
+            {catalogSelection ? (
+              <>
+                <div className="library-catalog-actions">
+                  <button
+                    className="dashboard-action"
+                    disabled={isCatalogSelectionImporting}
+                    onClick={handleCloseCatalogSelection}
+                    type="button"
+                  >
+                    Volver al catalogo
+                  </button>
+                  <button
+                    className="dashboard-action"
+                    disabled={isCatalogSelectionImporting || selectedCatalogItemsCount >= totalCatalogItemsCount}
+                    onClick={handleSelectAllCatalogItems}
+                    type="button"
+                  >
+                    Seleccionar todo
+                  </button>
+                  <button
+                    className="dashboard-action"
+                    disabled={isCatalogSelectionImporting || selectedCatalogItemsCount === 0}
+                    onClick={handleClearCatalogSelection}
+                    type="button"
+                  >
+                    Limpiar seleccion
+                  </button>
+                  <button
+                    className="dashboard-action dashboard-action--import"
+                    disabled={isCatalogSelectionImporting || selectedCatalogItemsCount === 0}
+                    onClick={() => {
+                      void handleImportCatalogSelection('selected')
+                    }}
+                    type="button"
+                  >
+                    {isCatalogSelectionImporting
+                      ? 'Agregando...'
+                      : `Agregar seleccionadas (${selectedCatalogItemsCount})`}
+                  </button>
+                </div>
 
-            {catalogLoadState === 'loading' ? (
-              <p className="library-catalog-state">Cargando colecciones...</p>
-            ) : null}
-            {catalogError ? (
-              <p className="library-catalog-state library-catalog-state--error">
-                {catalogError} Se muestra una lista de respaldo local.
-              </p>
-            ) : null}
+                <p className="library-catalog-state">
+                  Seleccionadas {selectedCatalogItemsCount} de {totalCatalogItemsCount} figuras.
+                </p>
 
-            {catalogCollections.length > 0 ? (
-              <div className="library-catalog-grid">
-                {catalogCollections.map((collection) => {
-                  const isAddingThisCollection = collectionBeingAddedId === collection.id
-                  const isAddingAnotherCollection =
-                    !!collectionBeingAddedId && collectionBeingAddedId !== collection.id
-
-                  return (
-                    <article className="library-catalog-card" key={collection.id}>
-                      <CatalogPreview
-                        collectionName={collection.name}
-                        previewUrl={collection.preview}
-                      />
-                      <h3 className="library-catalog-card-title">{collection.name}</h3>
-                      <p className="library-catalog-card-meta">{collection.author ?? 'Comunidad'}</p>
-                      <p className="library-catalog-card-description">
-                        {collection.description ?? 'Coleccion de figuras lista para importar.'}
-                      </p>
-                      <button
-                        className="dashboard-action library-catalog-add"
-                        disabled={isAddingAnotherCollection || isAddingThisCollection}
-                        onClick={() => {
-                          void handleAddCollection(collection)
-                        }}
-                        type="button"
-                      >
-                        {isAddingThisCollection ? 'Agregando...' : 'Agregar'}
-                      </button>
-                    </article>
-                  )
-                })}
-              </div>
+                {catalogSelection.items.length > 0 ? (
+                  <div className="library-item-grid">
+                    {catalogSelection.items.map((item) => {
+                      const isSelected = catalogSelection.selectedItemIds.includes(item.id)
+                      return (
+                        <button
+                          aria-label={`${
+                            isSelected ? 'Quitar' : 'Seleccionar'
+                          } ${item.name} para importar`}
+                          aria-pressed={isSelected}
+                          className={`library-item-card${isSelected ? ' is-selected' : ''}`}
+                          disabled={isCatalogSelectionImporting}
+                          key={item.id}
+                          onClick={() => {
+                            handleToggleCatalogItemSelection(item.id)
+                          }}
+                          type="button"
+                        >
+                          <span className="library-item-card-check" aria-hidden="true">
+                            {isSelected ? 'x' : '+'}
+                          </span>
+                          <LibraryItemPreview elements={item.elements} itemName={item.name} />
+                          <span className="library-item-card-title">{item.name}</span>
+                          <span className="library-item-card-meta">
+                            {item.elements.length > 0
+                              ? `${item.elements.length} elementos`
+                              : 'Previsualizacion no disponible'}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="library-catalog-empty">No se encontraron figuras en esta coleccion.</p>
+                )}
+              </>
             ) : (
-              <p className="library-catalog-empty">No hay colecciones disponibles.</p>
+              <>
+                <div className="library-catalog-actions">
+                  <button
+                    className="dashboard-action dashboard-action--import"
+                    onClick={handleImportFromFileClick}
+                    type="button"
+                  >
+                    Importar archivo local
+                  </button>
+                  <button
+                    className="dashboard-action"
+                    disabled={catalogLoadState === 'loading'}
+                    onClick={() => {
+                      void loadCatalogCollections()
+                    }}
+                    type="button"
+                  >
+                    {catalogLoadState === 'loading' ? 'Actualizando...' : 'Actualizar catalogo'}
+                  </button>
+                </div>
+
+                {catalogLoadState === 'loading' ? (
+                  <p className="library-catalog-state">Cargando colecciones...</p>
+                ) : null}
+                {catalogError ? (
+                  <p className="library-catalog-state library-catalog-state--error">
+                    {catalogError} Se muestra una lista de respaldo local.
+                  </p>
+                ) : null}
+
+                {catalogCollections.length > 0 ? (
+                  <div className="library-catalog-grid">
+                    {catalogCollections.map((collection) => {
+                      const isLoadingThisCollection = collectionBeingAddedId === collection.id
+                      const isLoadingAnotherCollection =
+                        !!collectionBeingAddedId && collectionBeingAddedId !== collection.id
+
+                      return (
+                        <article className="library-catalog-card" key={collection.id}>
+                          <CatalogPreview
+                            collectionName={collection.name}
+                            previewUrl={collection.preview}
+                          />
+                          <h3 className="library-catalog-card-title">{collection.name}</h3>
+                          <p className="library-catalog-card-meta">{collection.author ?? 'Comunidad'}</p>
+                          <p className="library-catalog-card-description">
+                            {collection.description ?? 'Coleccion de figuras lista para importar.'}
+                          </p>
+                          <button
+                            className="dashboard-action library-catalog-add"
+                            disabled={isLoadingAnotherCollection || isLoadingThisCollection}
+                            onClick={() => {
+                              void handlePreviewCollection(collection)
+                            }}
+                            type="button"
+                          >
+                            {isLoadingThisCollection ? 'Cargando...' : 'Ver figuras'}
+                          </button>
+                        </article>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="library-catalog-empty">No hay colecciones disponibles.</p>
+                )}
+              </>
             )}
           </section>
         </div>
@@ -721,6 +1158,7 @@ export default function Dashboard() {
               detectScroll={false}
               handleKeyboardGlobally={false}
               UIOptions={uiOptions}
+              renderTopRightUI={renderTopRightUI}
               excalidrawAPI={(api) => {
                 excalidrawApiRef.current = api
                 setExcalidrawApi(api)

@@ -14,82 +14,6 @@
   background: linear-gradient(180deg, #eef3f9 0%, #e4ebf5 100%);
 }
 
-.dashboard-topbar {
-  position: fixed;
-  top: max(0.5rem, env(safe-area-inset-top));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 72;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  max-width: calc(100vw - max(1.1rem, env(safe-area-inset-left) + env(safe-area-inset-right)));
-  padding: 0.34rem;
-  border: 1px solid rgba(124, 141, 166, 0.35);
-  border-radius: 999px;
-  background-color: rgba(248, 252, 255, 0.92);
-  box-shadow: 0 10px 28px rgba(12, 30, 53, 0.24);
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.dashboard-topbar > * {
-  pointer-events: auto;
-}
-
-.dashboard-topbar.is-expanded {
-  border-radius: 0.92rem;
-}
-
-.dashboard-toolbar-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.45rem;
-  min-width: 2.45rem;
-  padding: 0.5rem 0.72rem;
-  border: 1px solid #c0d0e2;
-  border-radius: 0.68rem;
-  background-color: #edf5ff;
-  color: #1f3046;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-  touch-action: manipulation;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.dashboard-toolbar-toggle:hover {
-  background: #e5efff;
-}
-
-.dashboard-toolbar-toggle:focus-visible {
-  outline: 2px solid #2e6de4;
-  outline-offset: 2px;
-}
-
-.dashboard-toolbar-toggle-label {
-  margin-left: 0.3rem;
-  white-space: nowrap;
-}
-
-.dashboard-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: nowrap;
-  gap: 0.35rem;
-  max-width: 100%;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.dashboard-actions::-webkit-scrollbar {
-  display: none;
-}
-
 .dashboard-action {
   display: inline-flex;
   align-items: center;
@@ -113,13 +37,6 @@
   background-color: #eef5ff;
 }
 
-.dashboard-topbar .dashboard-action {
-  min-height: 2.45rem;
-  min-width: 2.45rem;
-  padding: 0.5rem 0.74rem;
-  border-radius: 0.68rem;
-}
-
 .dashboard-action-icon {
   display: inline-flex;
   width: 1.05rem;
@@ -135,19 +52,6 @@
 
 .dashboard-action-label {
   white-space: nowrap;
-}
-
-.dashboard-topbar:not(.is-expanded) .dashboard-action-label,
-.dashboard-topbar:not(.is-expanded) .dashboard-toolbar-toggle-label {
-  display: none;
-}
-
-.dashboard-topbar:not(.is-expanded) .dashboard-action-icon {
-  margin-right: 0;
-}
-
-.dashboard-topbar.is-expanded .dashboard-action-icon {
-  margin-right: 0.36rem;
 }
 
 .dashboard-action--pen-mode.is-active {
@@ -166,6 +70,25 @@
 .dashboard-action:focus-visible {
   outline: 2px solid #2e6de4;
   outline-offset: 2px;
+}
+
+.excal-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  pointer-events: auto;
+}
+
+.excal-toolbar-actions .excal-toolbar-button {
+  min-height: 2.35rem;
+  min-width: 2.35rem;
+  padding: 0.42rem 0.66rem;
+  border-radius: 0.65rem;
+  box-shadow: 0 7px 15px rgba(13, 35, 61, 0.16);
+}
+
+.excal-toolbar-actions .dashboard-action-label {
+  font-size: 0.82rem;
 }
 
 .dashboard-file-input {
@@ -270,6 +193,15 @@
   padding-right: 0.1rem;
 }
 
+.library-item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10.8rem, 1fr));
+  gap: 0.62rem;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 0.1rem;
+}
+
 .library-catalog-card {
   display: flex;
   flex-direction: column;
@@ -342,6 +274,106 @@
   justify-content: center;
 }
 
+.library-item-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
+  padding: 0.55rem;
+  border-radius: 0.78rem;
+  border: 1px solid #c7d6ea;
+  background: #ffffff;
+  color: #163351;
+  text-align: left;
+  cursor: pointer;
+}
+
+.library-item-card:hover {
+  border-color: #91abd0;
+  background: #f8fbff;
+}
+
+.library-item-card:focus-visible {
+  outline: 2px solid #2e6de4;
+  outline-offset: 2px;
+}
+
+.library-item-card.is-selected {
+  border-color: #5a82be;
+  background: #ecf4ff;
+}
+
+.library-item-card-check {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  border: 1px solid #7f9bc3;
+  background: #ffffff;
+  color: #2b4d76;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.library-item-card.is-selected .library-item-card-check {
+  border-color: #3f71b0;
+  background: #3f71b0;
+  color: #ffffff;
+}
+
+.library-item-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 0.58rem;
+  border: 1px solid #d1deef;
+  background: linear-gradient(160deg, #f4f8ff 0%, #eaf1ff 100%);
+}
+
+.library-item-preview-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.library-item-preview.is-fallback {
+  background: linear-gradient(145deg, #edf4ff 0%, #dce8fb 100%);
+}
+
+.library-item-preview-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 999px;
+  border: 1px solid #8ca5c8;
+  background: rgba(255, 255, 255, 0.84);
+  color: #345274;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.library-item-card-title {
+  font-size: 0.84rem;
+  line-height: 1.25;
+  color: #173050;
+}
+
+.library-item-card-meta {
+  font-size: 0.74rem;
+  color: #4f6786;
+}
+
 .library-catalog-empty {
   padding: 0.85rem 0.25rem;
   font-size: 0.86rem;
@@ -390,23 +422,15 @@
 }
 
 @media (pointer: coarse) {
-  .dashboard-topbar {
-    top: max(0.58rem, env(safe-area-inset-top));
-  }
-
   .dashboard-action {
     min-height: 3rem;
     min-width: 3rem;
   }
 
-  .dashboard-topbar .dashboard-action,
-  .dashboard-topbar .dashboard-toolbar-toggle {
-    min-height: 2.68rem;
-    min-width: 2.68rem;
-  }
-
-  .dashboard-topbar .dashboard-action {
-    padding: 0.56rem 0.82rem;
+  .excal-toolbar-actions .excal-toolbar-button {
+    min-height: 2.55rem;
+    min-width: 2.55rem;
+    padding: 0.5rem 0.78rem;
   }
 
   .dashboard-canvas .excalidraw {
@@ -435,5 +459,19 @@
 
   .library-catalog-grid {
     grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  }
+
+  .library-item-grid {
+    grid-template-columns: repeat(auto-fill, minmax(9.6rem, 1fr));
+  }
+}
+
+@media (max-width: 920px) {
+  .excal-toolbar-actions .dashboard-action-label {
+    display: none;
+  }
+
+  .excal-toolbar-actions .dashboard-action-icon {
+    margin-right: 0;
   }
 }
