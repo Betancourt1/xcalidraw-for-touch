@@ -27,7 +27,7 @@ type CatalogLibraryItem = {
   id: string
   name: string
   elements: Record<string, unknown>[]
-  raw: unknown
+  raw: Record<string, unknown>
 }
 type CatalogSelectionState = {
   collection: CatalogCollection
@@ -85,6 +85,17 @@ const FALLBACK_CATALOG: CatalogCollection[] = [
   },
 ]
 
+const LIBRARY_ARRAY_CANDIDATE_KEYS = [
+  'libraryItems',
+  'items',
+  'library',
+  'libraries',
+  'payload',
+  'content',
+  'data',
+] as const
+type RawLibraryEntry = Record<string, unknown> | unknown[]
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
@@ -105,6 +116,14 @@ const extractRecordArray = (value: unknown): Record<string, unknown>[] => {
   return value.filter((entry): entry is Record<string, unknown> => isRecord(entry))
 }
 
+const extractLibraryEntryArray = (value: unknown): RawLibraryEntry[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter((entry): entry is RawLibraryEntry => isRecord(entry) || Array.isArray(entry))
+}
+
 const extractItemElements = (libraryItem: Record<string, unknown>): Record<string, unknown>[] => {
   const directElements = extractRecordArray(libraryItem.elements)
   if (directElements.length > 0) {
@@ -118,79 +137,143 @@ const extractItemElements = (libraryItem: Record<string, unknown>): Record<strin
   return extractRecordArray(libraryItem.data.elements)
 }
 
-const extractLibraryItems = (parsed: unknown): unknown[] | null => {
-  if (Array.isArray(parsed)) {
-    return parsed
-  }
+const stripUtf8Bom = (value: string): string => value.replace(/^\uFEFF/, '').trim()
 
-  if (!isRecord(parsed)) {
-    return null
-  }
+const extractCandidateLibraryArrays = (parsed: unknown): RawLibraryEntry[][] => {
+  const candidateArrays: RawLibraryEntry[][] = []
+  const queue: Array<{ node: unknown; depth: number }> = [{ node: parsed, depth: 0 }]
 
-  if (Array.isArray(parsed.libraryItems)) {
-    return parsed.libraryItems
-  }
-
-  if (Array.isArray(parsed.items)) {
-    return parsed.items
-  }
-
-  if (Array.isArray(parsed.library)) {
-    return parsed.library
-  }
-
-  if (isRecord(parsed.library)) {
-    if (Array.isArray(parsed.library.libraryItems)) {
-      return parsed.library.libraryItems
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) {
+      continue
     }
 
-    if (Array.isArray(parsed.library.library)) {
-      return parsed.library.library
+    const { node, depth } = current
+    if (depth > 5) {
+      continue
     }
 
-    if (Array.isArray(parsed.library.items)) {
-      return parsed.library.items
+    if (Array.isArray(node)) {
+      const libraryEntries = extractLibraryEntryArray(node)
+      if (libraryEntries.length > 0) {
+        candidateArrays.push(libraryEntries)
+      }
+
+      libraryEntries.forEach((entry) => {
+        if (isRecord(entry) || Array.isArray(entry)) {
+          queue.push({ node: entry, depth: depth + 1 })
+        }
+      })
+      continue
     }
+
+    if (!isRecord(node)) {
+      continue
+    }
+
+    LIBRARY_ARRAY_CANDIDATE_KEYS.forEach((key) => {
+      const value = node[key]
+      if (!Array.isArray(value)) {
+        return
+      }
+
+      const libraryEntries = extractLibraryEntryArray(value)
+      if (libraryEntries.length > 0) {
+        candidateArrays.push(libraryEntries)
+      }
+    })
+
+    Object.values(node).forEach((value) => {
+      if (isRecord(value) || Array.isArray(value)) {
+        queue.push({ node: value, depth: depth + 1 })
+      }
+    })
   }
 
-  return null
+  return candidateArrays
 }
 
-const parseLibraryItemsFromText = (rawText: string): unknown[] => {
+const normalizeLibraryItems = (libraryItems: RawLibraryEntry[]): Record<string, unknown>[] =>
+  libraryItems.flatMap((entry, index) => {
+    const entryRecord = isRecord(entry) ? entry : null
+    const elements = entryRecord ? extractItemElements(entryRecord) : extractRecordArray(entry)
+    if (elements.length === 0) {
+      return []
+    }
+
+    const rawId =
+      entryRecord && typeof entryRecord.id === 'string' && entryRecord.id.trim()
+        ? entryRecord.id.trim()
+        : `item-${index + 1}`
+    const rawName =
+      entryRecord && typeof entryRecord.name === 'string' && entryRecord.name.trim()
+        ? entryRecord.name.trim()
+        : `Figura ${index + 1}`
+    const rawStatus =
+      entryRecord && typeof entryRecord.status === 'string' && entryRecord.status.trim()
+        ? entryRecord.status.trim()
+        : 'published'
+    const createdAt =
+      entryRecord && typeof entryRecord.created === 'number' && Number.isFinite(entryRecord.created)
+        ? entryRecord.created
+        : Date.now() + index
+
+    return [
+      {
+        ...(entryRecord ?? {}),
+        id: rawId,
+        name: rawName,
+        status: rawStatus,
+        created: createdAt,
+        elements,
+      },
+    ]
+  })
+
+const extractLibraryItems = (parsed: unknown): Record<string, unknown>[] => {
+  const candidateArrays = extractCandidateLibraryArrays(parsed)
+  if (candidateArrays.length === 0) {
+    return []
+  }
+
+  const normalizedCandidates = candidateArrays
+    .map((candidateArray) => normalizeLibraryItems(candidateArray))
+    .filter((candidateArray) => candidateArray.length > 0)
+    .sort((left, right) => right.length - left.length)
+
+  return normalizedCandidates[0] ?? []
+}
+
+const parseLibraryItemsFromText = (rawText: string): Record<string, unknown>[] => {
   let parsedJson: unknown
 
   try {
-    parsedJson = JSON.parse(rawText) as unknown
+    parsedJson = JSON.parse(stripUtf8Bom(rawText)) as unknown
   } catch {
     throw new Error('El contenido no es JSON valido.')
   }
 
   const libraryItems = extractLibraryItems(parsedJson)
-  if (!libraryItems || libraryItems.length === 0) {
+  if (libraryItems.length === 0) {
     throw new Error('No se encontraron figuras para importar.')
   }
 
   return libraryItems
 }
 
-const toCatalogLibraryItems = (libraryItems: unknown[]): CatalogLibraryItem[] =>
-  libraryItems.flatMap((entry, index) => {
-    if (!isRecord(entry)) {
-      return []
-    }
-
+const toCatalogLibraryItems = (libraryItems: Record<string, unknown>[]): CatalogLibraryItem[] =>
+  libraryItems.map((entry, index) => {
     const rawId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : `item-${index + 1}`
     const rawName =
       typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : `Figura ${index + 1}`
 
-    return [
-      {
-        id: `${rawId}-${index}`,
-        name: rawName,
-        elements: extractItemElements(entry),
-        raw: entry,
-      },
-    ]
+    return {
+      id: `${rawId}-${index}`,
+      name: rawName,
+      elements: extractItemElements(entry),
+      raw: entry,
+    }
   })
 
 const extractAbsolutePoints = (element: Record<string, unknown>): Array<{ x: number; y: number }> => {
@@ -284,16 +367,70 @@ const extractCatalogPreview = (entry: Record<string, unknown>): string | undefin
   return undefined
 }
 
-const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
-  if (!Array.isArray(rawCatalog)) {
+const extractCatalogEntries = (rawCatalog: unknown): Record<string, unknown>[] => {
+  if (Array.isArray(rawCatalog)) {
+    return extractRecordArray(rawCatalog)
+  }
+
+  if (!isRecord(rawCatalog)) {
     return []
   }
 
-  return rawCatalog.flatMap((entry, index) => {
-    if (!isRecord(entry)) {
-      return []
+  const candidateArrayKeys = ['libraries', 'items', 'collections', 'catalog'] as const
+  for (const key of candidateArrayKeys) {
+    const value = rawCatalog[key]
+    if (!Array.isArray(value)) {
+      continue
     }
 
+    const entries = extractRecordArray(value)
+    if (entries.length > 0) {
+      return entries
+    }
+  }
+
+  return []
+}
+
+const extractCatalogAuthor = (entry: Record<string, unknown>): string | undefined => {
+  if (typeof entry.author === 'string' && entry.author.trim()) {
+    return entry.author.trim()
+  }
+
+  if (isRecord(entry.author) && typeof entry.author.name === 'string' && entry.author.name.trim()) {
+    return entry.author.name.trim()
+  }
+
+  if (!Array.isArray(entry.authors)) {
+    return undefined
+  }
+
+  const authorNames = entry.authors.flatMap((authorEntry) => {
+    if (typeof authorEntry === 'string' && authorEntry.trim()) {
+      return [authorEntry.trim()]
+    }
+
+    if (isRecord(authorEntry) && typeof authorEntry.name === 'string' && authorEntry.name.trim()) {
+      return [authorEntry.name.trim()]
+    }
+
+    return []
+  })
+
+  if (authorNames.length === 0) {
+    return undefined
+  }
+
+  return authorNames.join(', ')
+}
+
+const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
+  const catalogEntries = extractCatalogEntries(rawCatalog)
+  if (catalogEntries.length === 0) {
+    return []
+  }
+
+  return catalogEntries.flatMap((entry, index) => {
     const name = typeof entry.name === 'string' ? entry.name.trim() : ''
     const source = typeof entry.source === 'string' ? entry.source.trim() : ''
 
@@ -308,10 +445,7 @@ const parseCatalogCollections = (rawCatalog: unknown): CatalogCollection[] => {
         ? entry.description.trim()
         : undefined
 
-    let author: string | undefined
-    if (isRecord(entry.author) && typeof entry.author.name === 'string' && entry.author.name.trim()) {
-      author = entry.author.name.trim()
-    }
+    const author = extractCatalogAuthor(entry)
 
     return [
       {
@@ -346,17 +480,146 @@ const resolveCatalogAssetUrl = (source: string): string => {
 type CatalogPreviewProps = {
   collectionName: string
   previewUrl?: string
+  previewElements?: Record<string, unknown>[]
+  onPreviewUnavailable?: () => void
 }
 
-const CatalogPreview = ({ collectionName, previewUrl }: CatalogPreviewProps) => {
+type PreviewElementsSvgProps = {
+  className: string
+  elements: Record<string, unknown>[]
+}
+
+const PreviewElementsSvg = ({ className, elements }: PreviewElementsSvgProps) => {
+  const bounds = useMemo(() => computeItemPreviewBounds(elements), [elements])
+
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      preserveAspectRatio="xMidYMid meet"
+      viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
+    >
+      {elements.map((element, index) => {
+        const type = typeof element.type === 'string' ? element.type : 'rectangle'
+        const rawX = toFiniteNumber(element.x)
+        const rawY = toFiniteNumber(element.y)
+        const rawWidth = toFiniteNumber(element.width)
+        const rawHeight = toFiniteNumber(element.height)
+        const x = Math.min(rawX, rawX + rawWidth)
+        const y = Math.min(rawY, rawY + rawHeight)
+        const width = Math.max(Math.abs(rawWidth), 1)
+        const height = Math.max(Math.abs(rawHeight), 1)
+        const stroke = sanitizeColor(element.strokeColor, '#2d4c70')
+        const backgroundColor = sanitizeColor(element.backgroundColor, 'transparent')
+        const fill = backgroundColor === 'transparent' ? 'none' : backgroundColor
+        const strokeWidth = clamp(toFiniteNumber(element.strokeWidth, 2), 0.8, 6)
+        const opacity = clamp(toFiniteNumber(element.opacity, 100), 0, 100) / 100
+        const key = `${type}-${index}`
+
+        if (type === 'ellipse') {
+          return (
+            <ellipse
+              cx={x + width / 2}
+              cy={y + height / 2}
+              fill={fill}
+              key={key}
+              opacity={opacity}
+              rx={width / 2}
+              ry={height / 2}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+            />
+          )
+        }
+
+        if (type === 'diamond') {
+          const points = `${x + width / 2},${y} ${x + width},${y + height / 2} ${x + width / 2},${
+            y + height
+          } ${x},${y + height / 2}`
+          return (
+            <polygon
+              fill={fill}
+              key={key}
+              opacity={opacity}
+              points={points}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+            />
+          )
+        }
+
+        if (type === 'line' || type === 'arrow' || type === 'freedraw' || type === 'draw') {
+          const points = extractAbsolutePoints(element)
+          const polylinePoints =
+            points.length > 0
+              ? points.map((point) => `${point.x},${point.y}`).join(' ')
+              : `${rawX},${rawY} ${rawX + rawWidth},${rawY + rawHeight}`
+
+          return (
+            <polyline
+              fill="none"
+              key={key}
+              opacity={opacity}
+              points={polylinePoints}
+              stroke={stroke}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={strokeWidth}
+            />
+          )
+        }
+
+        if (type === 'text') {
+          const textValue = typeof element.text === 'string' && element.text.trim() ? element.text : 'TXT'
+          const fontSize = clamp(toFiniteNumber(element.fontSize, 18), 10, 36)
+          return (
+            <text fill={stroke} fontSize={fontSize} key={key} opacity={opacity} x={x} y={y + fontSize}>
+              {textValue.slice(0, 16)}
+            </text>
+          )
+        }
+
+        return (
+          <rect
+            fill={fill}
+            height={height}
+            key={key}
+            opacity={opacity}
+            rx={6}
+            ry={6}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            width={width}
+            x={x}
+            y={y}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
+const CatalogPreview = ({
+  collectionName,
+  previewUrl,
+  previewElements,
+  onPreviewUnavailable,
+}: CatalogPreviewProps) => {
   const [hasPreviewError, setHasPreviewError] = useState(false)
 
   useEffect(() => {
     setHasPreviewError(false)
   }, [previewUrl])
 
+  const hasElementsPreview = Boolean(previewElements && previewElements.length > 0)
   const showPreviewImage = Boolean(previewUrl) && !hasPreviewError
   const fallbackLabel = collectionName.trim().charAt(0).toUpperCase() || '?'
+
+  useEffect(() => {
+    if (!showPreviewImage && !hasElementsPreview) {
+      onPreviewUnavailable?.()
+    }
+  }, [hasElementsPreview, onPreviewUnavailable, showPreviewImage])
 
   return (
     <div
@@ -373,6 +636,8 @@ const CatalogPreview = ({ collectionName, previewUrl }: CatalogPreviewProps) => 
           }}
           src={previewUrl}
         />
+      ) : hasElementsPreview && previewElements ? (
+        <PreviewElementsSvg className="library-catalog-card-preview-svg" elements={previewElements} />
       ) : (
         <span className="library-catalog-card-preview-fallback">{fallbackLabel}</span>
       )}
@@ -387,122 +652,12 @@ type LibraryItemPreviewProps = {
 
 const LibraryItemPreview = ({ itemName, elements }: LibraryItemPreviewProps) => {
   const hasRenderableElements = elements.length > 0
-  const bounds = useMemo(() => computeItemPreviewBounds(elements), [elements])
   const fallbackLabel = itemName.trim().charAt(0).toUpperCase() || '?'
 
   return (
     <div className={`library-item-preview${hasRenderableElements ? '' : ' is-fallback'}`}>
       {hasRenderableElements ? (
-        <svg
-          aria-hidden="true"
-          className="library-item-preview-svg"
-          preserveAspectRatio="xMidYMid meet"
-          viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
-        >
-          {elements.map((element, index) => {
-            const type = typeof element.type === 'string' ? element.type : 'rectangle'
-            const rawX = toFiniteNumber(element.x)
-            const rawY = toFiniteNumber(element.y)
-            const rawWidth = toFiniteNumber(element.width)
-            const rawHeight = toFiniteNumber(element.height)
-            const x = Math.min(rawX, rawX + rawWidth)
-            const y = Math.min(rawY, rawY + rawHeight)
-            const width = Math.max(Math.abs(rawWidth), 1)
-            const height = Math.max(Math.abs(rawHeight), 1)
-            const stroke = sanitizeColor(element.strokeColor, '#2d4c70')
-            const backgroundColor = sanitizeColor(element.backgroundColor, 'transparent')
-            const fill = backgroundColor === 'transparent' ? 'none' : backgroundColor
-            const strokeWidth = clamp(toFiniteNumber(element.strokeWidth, 2), 0.8, 6)
-            const opacity = clamp(toFiniteNumber(element.opacity, 100), 0, 100) / 100
-            const key = `${type}-${index}`
-
-            if (type === 'ellipse') {
-              return (
-                <ellipse
-                  cx={x + width / 2}
-                  cy={y + height / 2}
-                  fill={fill}
-                  key={key}
-                  opacity={opacity}
-                  rx={width / 2}
-                  ry={height / 2}
-                  stroke={stroke}
-                  strokeWidth={strokeWidth}
-                />
-              )
-            }
-
-            if (type === 'diamond') {
-              const points = `${x + width / 2},${y} ${x + width},${y + height / 2} ${x + width / 2},${
-                y + height
-              } ${x},${y + height / 2}`
-              return (
-                <polygon
-                  fill={fill}
-                  key={key}
-                  opacity={opacity}
-                  points={points}
-                  stroke={stroke}
-                  strokeWidth={strokeWidth}
-                />
-              )
-            }
-
-            if (type === 'line' || type === 'arrow' || type === 'freedraw' || type === 'draw') {
-              const points = extractAbsolutePoints(element)
-              const polylinePoints =
-                points.length > 0
-                  ? points.map((point) => `${point.x},${point.y}`).join(' ')
-                  : `${rawX},${rawY} ${rawX + rawWidth},${rawY + rawHeight}`
-
-              return (
-                <polyline
-                  fill="none"
-                  key={key}
-                  opacity={opacity}
-                  points={polylinePoints}
-                  stroke={stroke}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={strokeWidth}
-                />
-              )
-            }
-
-            if (type === 'text') {
-              const textValue = typeof element.text === 'string' && element.text.trim() ? element.text : 'TXT'
-              const fontSize = clamp(toFiniteNumber(element.fontSize, 18), 10, 36)
-              return (
-                <text
-                  fill={stroke}
-                  fontSize={fontSize}
-                  key={key}
-                  opacity={opacity}
-                  x={x}
-                  y={y + fontSize}
-                >
-                  {textValue.slice(0, 16)}
-                </text>
-              )
-            }
-
-            return (
-              <rect
-                fill={fill}
-                height={height}
-                key={key}
-                opacity={opacity}
-                rx={6}
-                ry={6}
-                stroke={stroke}
-                strokeWidth={strokeWidth}
-                width={width}
-                x={x}
-                y={y}
-              />
-            )
-          })}
-        </svg>
+        <PreviewElementsSvg className="library-item-preview-svg" elements={elements} />
       ) : (
         <span className="library-item-preview-fallback">{fallbackLabel}</span>
       )}
@@ -517,9 +672,13 @@ export default function Dashboard() {
   const [isCatalogOpen, setIsCatalogOpen] = useState(false)
   const [catalogLoadState, setCatalogLoadState] = useState<CatalogLoadState>('idle')
   const [catalogCollections, setCatalogCollections] = useState<CatalogCollection[]>(FALLBACK_CATALOG)
+  const [catalogPreviewElementsByCollectionId, setCatalogPreviewElementsByCollectionId] = useState<
+    Record<string, Record<string, unknown>[]>
+  >({})
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [collectionBeingAddedId, setCollectionBeingAddedId] = useState<string | null>(null)
   const [catalogSelection, setCatalogSelection] = useState<CatalogSelectionState | null>(null)
+  const catalogPreviewLoadingRef = useRef(new Set<string>())
   const touchPointerIdsRef = useRef(new Set<number>())
   const toolBeforeTouchRef = useRef<ActiveTool | null>(null)
 
@@ -579,6 +738,54 @@ export default function Dashboard() {
     await importLibraryItems(libraryItems)
     return libraryItems.length
   }
+
+  const ensureCatalogCollectionPreview = useCallback(
+    async (collection: CatalogCollection) => {
+      if (catalogPreviewElementsByCollectionId[collection.id]?.length) {
+        return
+      }
+
+      const inFlightRequests = catalogPreviewLoadingRef.current
+      if (inFlightRequests.has(collection.id)) {
+        return
+      }
+
+      inFlightRequests.add(collection.id)
+
+      try {
+        const sourceUrl = resolveCatalogAssetUrl(collection.source)
+        const response = await fetch(sourceUrl)
+        if (!response.ok) {
+          return
+        }
+
+        const collectionText = await response.text()
+        const parsedLibraryItems = parseLibraryItemsFromText(collectionText)
+        const parsedCatalogItems = toCatalogLibraryItems(parsedLibraryItems)
+        const previewItem = parsedCatalogItems.find((item) => item.elements.length > 0)
+
+        if (!previewItem) {
+          return
+        }
+
+        setCatalogPreviewElementsByCollectionId((currentMap) => {
+          if (currentMap[collection.id]?.length) {
+            return currentMap
+          }
+
+          return {
+            ...currentMap,
+            [collection.id]: previewItem.elements,
+          }
+        })
+      } catch {
+        // Ignore preview hydration errors; the card fallback remains usable.
+      } finally {
+        inFlightRequests.delete(collection.id)
+      }
+    },
+    [catalogPreviewElementsByCollectionId],
+  )
 
   const loadCatalogCollections = useCallback(async () => {
     if (catalogLoadState === 'loading') {
@@ -685,6 +892,20 @@ export default function Dashboard() {
 
       if (parsedCatalogItems.length === 0) {
         throw new Error('La coleccion no contiene figuras compatibles para previsualizar.')
+      }
+
+      const firstPreviewItem = parsedCatalogItems.find((item) => item.elements.length > 0)
+      if (firstPreviewItem) {
+        setCatalogPreviewElementsByCollectionId((currentMap) => {
+          if (currentMap[collection.id]?.length) {
+            return currentMap
+          }
+
+          return {
+            ...currentMap,
+            [collection.id]: firstPreviewItem.elements,
+          }
+        })
       }
 
       setCatalogSelection({
@@ -1119,6 +1340,10 @@ export default function Dashboard() {
                         <article className="library-catalog-card" key={collection.id}>
                           <CatalogPreview
                             collectionName={collection.name}
+                            onPreviewUnavailable={() => {
+                              void ensureCatalogCollectionPreview(collection)
+                            }}
+                            previewElements={catalogPreviewElementsByCollectionId[collection.id]}
                             previewUrl={collection.preview}
                           />
                           <h3 className="library-catalog-card-title">{collection.name}</h3>
